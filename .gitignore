@@ -1,0 +1,6 @@
+
+# NestJS Observe key pair
+.env
+node_modules
+dist/
+*.tsbuildinfo
