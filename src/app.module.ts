@@ -7,6 +7,7 @@ import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
 import { WebhooksModule } from './webhooks/webhooks.module';
 import { QueueModule } from './queue/queue.module';
+import { EventsModule } from './events/events.module';
 
 @Module({
   imports: [
@@ -29,6 +30,7 @@ import { QueueModule } from './queue/queue.module';
     AuthModule,
     WebhooksModule,
     QueueModule,
+    EventsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
