@@ -62,10 +62,6 @@ export class WebhookProcessor extends WorkerHost {
   }
 
   private async handle(event: WebhookEvent): Promise<void> {
-    // Test hook: lets us simulate a failing handler. Remove before production use.
-    if (event.payload.simulateFailure === true) {
-      throw new Error('Simulated handler failure');
-    }
 
     switch (event.type) {
       case 'payment.success':
