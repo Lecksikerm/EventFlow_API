@@ -6,6 +6,7 @@ import { AppService } from './app.service';
 import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
 import { WebhooksModule } from './webhooks/webhooks.module';
+import { QueueModule } from './queue/queue.module';
 
 @Module({
   imports: [
@@ -27,6 +28,7 @@ import { WebhooksModule } from './webhooks/webhooks.module';
     UsersModule,
     AuthModule,
     WebhooksModule,
+    QueueModule,
   ],
   controllers: [AppController],
   providers: [AppService],
