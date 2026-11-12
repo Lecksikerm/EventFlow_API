@@ -8,6 +8,7 @@ import { EventStatus } from '../events/enums/event-status.enum';
 import { WEBHOOK_QUEUE } from '../queue/queue.constants';
 import { WebhookJobData } from '../queue/processors/webhook.processor';
 import { CreateWebhookEventDto } from './dto/create-webhook-event.dto';
+import { WEBHOOK_JOB_OPTIONS } from '../queue/queue.constants';
 
 // PostgreSQL error code for unique_violation
 const UNIQUE_VIOLATION = '23505';
@@ -51,7 +52,7 @@ export class WebhooksService {
     await this.webhookQueue.add(
       'process-webhook',
       { webhookEventId: saved.id },
-      { jobId: saved.id },
+      { jobId: saved.id, ...WEBHOOK_JOB_OPTIONS },
     );
 
     return { event: saved, isDuplicate: false };

@@ -1,5 +1,5 @@
 import { Logger } from '@nestjs/common';
-import { Processor, WorkerHost } from '@nestjs/bullmq';
+import { OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Job } from 'bullmq';
 import { Repository } from 'typeorm';
@@ -29,7 +29,7 @@ export class WebhookProcessor extends WorkerHost {
 
     await this.eventsRepository.update(event.id, {
       status: EventStatus.PROCESSING,
-      attempts: event.attempts + 1,
+      attempts: job.attemptsMade + 1,
     });
 
     await this.handle(event);
@@ -43,10 +43,32 @@ export class WebhookProcessor extends WorkerHost {
     this.logger.log(`Completed ${event.type} (${event.eventId})`);
   }
 
+  // Runs after every failed attempt. Only the final failure marks the event as FAILED;
+  // earlier failures stay PROCESSING while BullMQ schedules the next retry.
+  @OnWorkerEvent('failed')
+  async onFailed(job: Job<WebhookJobData>, error: Error): Promise<void> {
+    const isFinalAttempt = job.attemptsMade >= (job.opts.attempts ?? 1);
+
+    await this.eventsRepository.update(job.data.webhookEventId, {
+      status: isFinalAttempt ? EventStatus.FAILED : EventStatus.PROCESSING,
+      errorMessage: error.message,
+    });
+
+    if (isFinalAttempt) {
+      this.logger.error(`Event ${job.data.webhookEventId} failed permanently: ${error.message}`);
+    } else {
+      this.logger.warn(`Attempt ${job.attemptsMade} failed, will retry: ${error.message}`);
+    }
+  }
+
   private async handle(event: WebhookEvent): Promise<void> {
+    // Test hook: lets us simulate a failing handler. Remove before production use.
+    if (event.payload.simulateFailure === true) {
+      throw new Error('Simulated handler failure');
+    }
+
     switch (event.type) {
       case 'payment.success':
-        // Real payment handling goes here (e.g. mark the order as paid).
         this.logger.log(`Processing payment for customer ${event.payload.customerId}`);
         return;
       case 'user.created':
