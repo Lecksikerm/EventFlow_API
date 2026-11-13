@@ -1,126 +1,138 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# EventFlow API
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+A backend that receives webhook events reliably. It verifies signatures, prevents duplicate processing, processes events in the background, retries failures, and tracks the status of every event.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+## The problem
 
-## Description
+Services like payment providers send events such as `payment.success` or `subscription.cancelled`. The same event can arrive more than once, processing can fail temporarily, and slow work shouldn't hold up the response. EventFlow handles all of these.
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+## Architecture
 
-## Project setup
-
-```bash
-$ npm install
+```
+Webhook provider
+      |
+POST /webhooks/events
+      |
+Verify HMAC signature ──> 401 if invalid
+      |
+Save to PostgreSQL (unique event_id)
+      |
+Duplicate? ──> 202 with duplicate: true
+      |
+Add job to BullMQ (Redis)
+      |
+202 Accepted
+      |
+Background worker
+      |
+Success ──> completed
+Failure ──> retry with exponential backoff ──> failed after all attempts
 ```
 
-## Compile and run the project
+## Features
+
+- **Signature verification:** HMAC-SHA256 over the raw request body, compared in constant time.
+- **Idempotency:** A unique constraint on `event_id`, so duplicate deliveries never create a second record.
+- **Background processing:** Events are saved and queued, so the response is fast.
+- **Retries:** Four attempts with exponential backoff (2s, 4s, 8s). Only the final failure marks an event `failed`.
+- **Status tracking:** Every event moves through `pending`, `processing`, `completed`, or `failed`.
+- **Monitoring:** Stats by status, listing with filters, and a manual retry endpoint.
+- **Auth:** Registration and login with bcrypt and JWT. Monitoring routes require a token.
+- **Docs and validation:** Swagger at `/api/docs`, with DTO validation on every request.
+- **Migrations:** TypeORM migrations, with `synchronize` turned off.
+
+## Tech stack
+
+NestJS, TypeScript, PostgreSQL, TypeORM, Redis, BullMQ, Passport JWT, class-validator, Swagger.
+
+## Setup
+
+Requirements: Node.js 20+, PostgreSQL 16+, Redis 7+.
+
+1. Install dependencies:
+
+   ```bash
+   npm install
+   ```
+
+2. Create a `.env` file in the project root:
+
+   ```
+   DB_HOST=localhost
+   DB_PORT=5432
+   DB_USERNAME=postgres
+   DB_PASSWORD=your_password
+   DB_NAME=eventflow
+
+   JWT_SECRET=your_long_random_secret
+   JWT_EXPIRES_IN=1d
+
+   WEBHOOK_SECRET=your_webhook_secret
+
+   REDIS_HOST=localhost
+   REDIS_PORT=6379
+   ```
+
+   Generate secrets with `openssl rand -hex 32`. Never commit `.env`.
+
+3. Create the database, start Redis, and run migrations:
+
+   ```bash
+   sudo -u postgres psql -c "CREATE DATABASE eventflow;"
+   sudo service redis-server start
+   npm run migration:run
+   ```
+
+4. Start the server:
+
+   ```bash
+   npm run start:dev
+   ```
+
+The API runs at `http://localhost:3000` and the docs at `http://localhost:3000/api/docs`.
+
+## Endpoints
+
+| Method | Endpoint | Auth | Description |
+| --- | --- | --- | --- |
+| POST | `/auth/register` | No | Create an account |
+| POST | `/auth/login` | No | Log in and get a JWT |
+| GET | `/auth/profile` | JWT | Get the current user |
+| POST | `/webhooks/events` | Signature | Receive an event |
+| GET | `/events` | JWT | List events, optionally `?status=failed` |
+| GET | `/events/stats` | JWT | Count events by status |
+| GET | `/events/:id` | JWT | Get one event |
+| POST | `/events/:id/retry` | JWT | Requeue a failed event |
+
+## Sending a signed webhook
+
+Sign the exact request body with HMAC-SHA256 using `WEBHOOK_SECRET`, and send the hex digest in the `x-webhook-signature` header:
 
 ```bash
-# development
-$ npm run start
+body='{"eventId":"evt_001","type":"payment.success","data":{"customerId":"cus_123","amount":5000,"currency":"NGN"}}'
+secret=$(grep '^WEBHOOK_SECRET=' .env | cut -d= -f2-)
+sig=$(printf '%s' "$body" | openssl dgst -sha256 -hmac "$secret" | awk '{print $2}')
 
-# watch mode
-$ npm run start:dev
-
-# production mode
-$ npm run start:prod
+curl -X POST http://localhost:3000/webhooks/events \
+  -H "Content-Type: application/json" \
+  -H "x-webhook-signature: $sig" \
+  -d "$body"
 ```
 
-## Run tests
+Sending the same event again returns `202` with `"duplicate": true` and creates no new record.
 
-```bash
-# unit tests
-$ npm run test
+## Design decisions
 
-# e2e tests
-$ npm run test:e2e
+- **Queue:** Processing inside the request would slow the response and could trigger provider retries that cause duplicate work. Saving and queuing keeps the endpoint fast.
+- **Unique constraint:** Two identical deliveries can arrive at the same moment, and an application-level check can race. The database constraint is the final guarantee.
+- **Retries with backoff:** Many failures are temporary. Backoff gives the failing service time to recover.
+- **Raw body signing:** Re-serializing parsed JSON can change the bytes, which breaks the signature. Verifying the exact bytes avoids that.
+- **Migrations:** Schema changes are explicit, reviewable files, applied the same way in every environment.
 
-# test coverage
-$ npm run test:cov
-```
+## Testing
 
-## Deployment
-
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
-
-```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
-```
-
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
-
-## Observability
-
-In production applications, observability is essential for understanding how your system behaves, detecting issues early, and maintaining reliable performance.
-
-[NestJS Observe](https://observe.nestjs.com) automatically instruments your NestJS application, giving you deep visibility into your system with minimal setup:
-
-- **Distributed tracing:** Follow requests across services and understand how they flow through your system.
-- **Waterfall analysis:** Visualize request execution and identify slow operations, bottlenecks, and unexpected delays.
-- **Performance analysis:** Analyze application performance in real time and quickly pinpoint areas that need optimization.
-- **Metrics:** Track key application and infrastructure metrics to understand system health and performance trends.
-- **Logging:** Centralize and correlate logs with traces and other telemetry to make debugging easier.
-- **Error tracking:** Detect errors quickly and investigate their root causes with the surrounding context.
-- **SLA monitoring:** Track service-level objectives and identify when your application is approaching or exceeding defined thresholds.
-- **Alarms and alerts:** Set up alerts for critical errors, performance degradation, SLA violations, and other anomalies so your team can react quickly.
-
-This project is already instrumented. To connect it, run this and approve the code it prints at [observe.nestjs.com/link](https://observe.nestjs.com/link) - signing up for free if you have no account:
-
-```bash
-$ npx @nestjs/observe link
-```
-
-It writes the app key and secret into `.env` and makes every `nest start` script (`start`, `start:dev`, `start:debug`) load it. In production, set `OBSERVE_APP_KEY` and `OBSERVE_APP_SECRET` in the environment instead.
-
-Or do it by hand: create an application and an API key at [observe.nestjs.com](https://observe.nestjs.com), and set the pair as `OBSERVE_APP_KEY` and `OBSERVE_APP_SECRET` in the environment the app runs in.
-
-The free plan needs no payment details and covers 300,000 events a month. You can also browse the [live demo](https://www.observe-demo.nestjs.com/dashboard) first - the whole dashboard over a busy service's data, with nothing to install.
-
-## Resources
-
-Check out a few resources that may come in handy when working with NestJS:
-
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Auto-instrument your application with [NestJS Observe](https://observe.nestjs.com). Distributed tracing, metrics, and logging made easy. Error tracking and performance monitoring for your NestJS applications.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
-
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
+Tested manually with `curl` and Swagger. Automated Jest tests are the next planned step.
 
 ## License
 
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+MIT
